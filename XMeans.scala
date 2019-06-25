@@ -1,20 +1,29 @@
-package org.apache.spark.mllib.clustering
+
+
+import org.apache.spark.mllib.clustering.{KMeans, KMeansModel}
+import org.apache.spark.mllib.linalg.Vectors
+import java.io._
+import java.nio._
+import sys.process._
+import org.apache.spark.mllib.linalg.Vector
+import org.apache.spark.rdd.RDD
+import java.lang.Math
+
 
 class XMeans private (
   private var kMax: Int,
   private var maxIterations: Int,
   private var initializationMode: String,
   private var initializationSteps: Int,
-  private var epsilon: Double,
-  private var seed: Long,
-  private var distanceMeasure: String) extends Serializable {
+  private var epsilon: Double) extends Serializable {
 
   /**
      * Constructs a XMeans instance with default parameters: {kMax: 12, maxIterations: 20,
      * initializationMode: "k-means||", initializationSteps: 2, epsilon: 1e-4, seed: random,
      * distanceMeasure: "euclidean"}.
      */
-  def this() = this(12, 20)
+  def this() = this(12, 20, KMeans.K_MEANS_PARALLEL, 2, 1e-4)
+
 
   /**
    * Maximum number of clusters that XMeans can make.
@@ -57,10 +66,13 @@ class XMeans private (
    * (Bahmani et al., Scalable K-Means++, VLDB 2012). Default: k-means||.
    */
   def setInitializationMode(initializationMode: String): this.type = {
-    KMeans.validateInitMode(initializationMode)
+    require(initializationMode == "random" || initializationMode == "k-means||",
+      s"Initialization mode must be 'random' or 'k-means', but got '${initializationMode}'")
     this.initializationMode = initializationMode
     this
   }
+
+
 
   /**
    * Number of steps for the k-means|| initialization mode
@@ -95,45 +107,26 @@ class XMeans private (
     this
   }
 
-  /**
-   * The random seed for cluster initialization.
-   */
-  def getSeed: Long = seed
 
-  /**
-   * Set the random seed for cluster initialization.
-   */
-  def setSeed(seed: Long): this.type = {
-    this.seed = seed
-    this
-  }
-
-  /**
-   * The distance suite used by the algorithm.
-   */
-  def getDistanceMeasure: String = distanceMeasure
-
-  /**
-   * Set the distance suite used by the algorithm.
-   */
-  def setDistanceMeasure(distanceMeasure: String): this.type = {
-    DistanceMeasure.validateDistanceMeasure(distanceMeasure)
-    this.distanceMeasure = distanceMeasure
-    this
-  }
-
-  def run(data: RDD[Vector]) {
-    var k = 2
-    var model = KMeans.train(data, k, maxIterations)
+  def run(data: RDD[Vector]): Array[org.apache.spark.mllib.linalg.Vector] = {
+    var model = new KMeans()
+                  .setK(2)
+                  .setMaxIterations(maxIterations)
+                  .setInitializationMode(initializationMode)
+                  .setInitializationSteps(initializationSteps)
+                  .setEpsilon(epsilon)
+                  .run(data)
     var centers = model.clusterCenters
     var currentModelScore = calculateBICModel(data, model)
     var oldCenterCount = 0.toLong
     while (oldCenterCount != centers.length && centers.length < kMax) {
       oldCenterCount = centers.length
       centers = centers.flatMap(c => centroidSplitter(c, data, model))
-      currentK = centers.length.toInt
       model = new KMeans()
-        .setK(currentK)
+        .setK(centers.length)
+        .setMaxIterations(maxIterations)
+        .setInitializationMode(initializationMode)
+        .setEpsilon(epsilon)
         .setInitialModel(new KMeansModel(centers))
         .run(data)
       centers = model.clusterCenters
@@ -141,14 +134,14 @@ class XMeans private (
     centers
   }
 
-  private def calculateBICModel(
+  def calculateBICModel(
     data: RDD[Vector],
     model: KMeansModel): Double = {
       val bic = model.clusterCenters.map(center => calculateBICCluster(center, data, model, model.k)).sum
       bic
   }
 
-  private def calculateBICCluster(
+  def calculateBICCluster(
     center: Vector,
     data: RDD[Vector],
     model: KMeansModel,
@@ -156,15 +149,11 @@ class XMeans private (
       val points = model.predict(data)
         .filter(_ == model.clusterCenters.indexOf(center))
         .count()
-      val bic = {(-1 * points * Math.log(2 * Math.PI) / 2)
-                - (points * center.size * Math.log(varianceMLE(data, model, k)) / 2
-                - (points - k / 2) + (points * Math.log(points))
-                - (points * Math.log(data.count())) - (((k - 1)
-                + (center.size * k) + 1) * Math.log(data.count()) / 2)}
+      val bic = (-1 * points * Math.log(2 * Math.PI) / 2) - (points * center.size * Math.log(varianceMLE(data, model, k)) / 2) - (points - k / 2) + (points * Math.log(points)) - (points * Math.log(data.count())) - (((k - 1) + (center.size * k) + 1) * Math.log(data.count()) / 2)
     bic
   }
 
-  private def centroidSplitter(
+  def centroidSplitter(
     center: Vector,
     data: RDD[Vector],
     model: KMeansModel): Array[Vector] = {
@@ -172,14 +161,22 @@ class XMeans private (
         .zip(data)
         .filter(_._1 == model.clusterCenters.indexOf(center))
         .map(x => x._2).cache()
-
-      val modelk1 = KMeans.train(clusterData, 1, maxIterations)
-      val modelk2 = KMeans.train(clusterData, 2, maxIterations)
-
+      val modelk1 = new KMeans()
+                    .setK(1)
+                    .setMaxIterations(maxIterations)
+                    .setInitializationMode(initializationMode)
+                    .setInitializationSteps(initializationSteps)
+                    .setEpsilon(epsilon)
+                    .run(clusterData)
+      val modelk2 = new KMeans()
+                    .setK(2)
+                    .setMaxIterations(maxIterations)
+                    .setInitializationMode(initializationMode)
+                    .setInitializationSteps(initializationSteps)
+                    .setEpsilon(epsilon)
+                    .run(clusterData)
       if (modelk2.k == 2) {
-        if (calculateBICCluster(modelk1.clusterCenters(0), clusterData, modelk1, 1) >
-           (calculateBICCluster(modelk2.clusterCenters(0), clusterData, modelk2, 2) +
-            calculateBICCluster(modelk2.clusterCenters(1), clusterData, modelk2, 2))) {
+        if (calculateBICCluster(modelk1.clusterCenters(0), clusterData, modelk1, 1) > (calculateBICCluster(modelk2.clusterCenters(0), clusterData, modelk2, 1) + calculateBICCluster(modelk2.clusterCenters(1), clusterData, modelk2, 1))) {
             modelk1.clusterCenters
         } else {
             modelk2.clusterCenters

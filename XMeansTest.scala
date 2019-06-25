@@ -1,6 +1,6 @@
 
 
-import org.apache.spark.mllib.clustering.{KMeans, KMeansModel, DistanceMeasure}
+import org.apache.spark.mllib.clustering.{KMeans, KMeansModel}
 import org.apache.spark.mllib.linalg.Vectors
 import java.io._
 import java.nio._
@@ -8,19 +8,6 @@ import sys.process._
 import org.apache.spark.mllib.linalg.Vector
 import org.apache.spark.rdd.RDD
 import java.lang.Math
-import org.apache.spark.util.Utils
-
-
-import scala.collection.mutable.ArrayBuffer
-
-import org.apache.spark.annotation.Since
-import org.apache.spark.broadcast.Broadcast
-import org.apache.spark.internal.Logging
-import org.apache.spark.ml.util.Instrumentation
-import org.apache.spark.mllib.linalg.{Vector, Vectors}
-import org.apache.spark.storage.StorageLevel
-import org.apache.spark.util.random.XORShiftRandom
-
 
 
 class XMeans private (
@@ -28,17 +15,14 @@ class XMeans private (
   private var maxIterations: Int,
   private var initializationMode: String,
   private var initializationSteps: Int,
-  private var epsilon: Double,
-  private var seed: Long,
-  private var distanceMeasure: String) extends Serializable {
+  private var epsilon: Double) extends Serializable {
 
   /**
      * Constructs a XMeans instance with default parameters: {kMax: 12, maxIterations: 20,
      * initializationMode: "k-means||", initializationSteps: 2, epsilon: 1e-4, seed: random,
      * distanceMeasure: "euclidean"}.
      */
-  def this() = this(12, 20, KMeans.K_MEANS_PARALLEL, 2, 1e-4, Utils.random.nextLong(),
-    DistanceMeasure.EUCLIDEAN)
+  def this() = this(12, 20, KMeans.K_MEANS_PARALLEL, 2, 1e-4)
 
 
   /**
@@ -123,35 +107,15 @@ class XMeans private (
     this
   }
 
-  /**
-   * The random seed for cluster initialization.
-   */
-  def getSeed: Long = seed
-
-  /**
-   * Set the random seed for cluster initialization.
-   */
-  def setSeed(seed: Long): this.type = {
-    this.seed = seed
-    this
-  }
-
-  /**
-   * The distance suite used by the algorithm.
-   */
-  def getDistanceMeasure: String = distanceMeasure
-
-  /**
-   * Set the distance suite used by the algorithm.
-   */
-  def setDistanceMeasure(distanceMeasure: String): this.type = {
-    DistanceMeasure.validateDistanceMeasure(distanceMeasure)
-    this.distanceMeasure = distanceMeasure
-    this
-  }
 
   def run(data: RDD[Vector]): Array[org.apache.spark.mllib.linalg.Vector] = {
-    var model = KMeans.train(data, 2, maxIterations)
+    var model = new KMeans()
+                  .setK(2)
+                  .setMaxIterations(maxIterations)
+                  .setInitializationMode(initializationMode)
+                  .setInitializationSteps(initializationSteps)
+                  .setEpsilon(epsilon)
+                  .run(data)
     var centers = model.clusterCenters
     var currentModelScore = calculateBICModel(data, model)
     var oldCenterCount = 0.toLong
@@ -160,6 +124,9 @@ class XMeans private (
       centers = centers.flatMap(c => centroidSplitter(c, data, model))
       model = new KMeans()
         .setK(centers.length)
+        .setMaxIterations(maxIterations)
+        .setInitializationMode(initializationMode)
+        .setEpsilon(epsilon)
         .setInitialModel(new KMeansModel(centers))
         .run(data)
       centers = model.clusterCenters
@@ -194,8 +161,20 @@ class XMeans private (
         .zip(data)
         .filter(_._1 == model.clusterCenters.indexOf(center))
         .map(x => x._2).cache()
-      val modelk1 = KMeans.train(clusterData, 1, maxIterations)
-      val modelk2 = KMeans.train(clusterData, 2, maxIterations)
+      val modelk1 = new KMeans()
+                    .setK(1)
+                    .setMaxIterations(maxIterations)
+                    .setInitializationMode(initializationMode)
+                    .setInitializationSteps(initializationSteps)
+                    .setEpsilon(epsilon)
+                    .run(clusterData)
+      val modelk2 = new KMeans()
+                    .setK(2)
+                    .setMaxIterations(maxIterations)
+                    .setInitializationMode(initializationMode)
+                    .setInitializationSteps(initializationSteps)
+                    .setEpsilon(epsilon)
+                    .run(clusterData)
       if (modelk2.k == 2) {
         if (calculateBICCluster(modelk1.clusterCenters(0), clusterData, modelk1, 1) > (calculateBICCluster(modelk2.clusterCenters(0), clusterData, modelk2, 1) + calculateBICCluster(modelk2.clusterCenters(1), clusterData, modelk2, 1))) {
             modelk1.clusterCenters
