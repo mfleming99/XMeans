@@ -1,14 +1,12 @@
-
-
-import org.apache.spark.mllib.clustering.{KMeans, KMeansModel}
-import org.apache.spark.mllib.linalg.Vectors
+import java.lang.Math
 import java.io._
 import java.nio._
 import sys.process._
-import org.apache.spark.mllib.linalg.Vector
-import org.apache.spark.rdd.RDD
-import java.lang.Math
 
+import org.apache.spark.mllib.clustering.{KMeans, KMeansModel}
+import org.apache.spark.mllib.linalg.{Vector, Vectors}
+
+import org.apache.spark.rdd.RDD
 
 class XMeans private (
   private var kMax: Int,
@@ -72,8 +70,6 @@ class XMeans private (
     this
   }
 
-
-
   /**
    * Number of steps for the k-means|| initialization mode
    */
@@ -110,21 +106,20 @@ class XMeans private (
 
   def run(data: RDD[Vector]): Array[org.apache.spark.mllib.linalg.Vector] = {
     var model = new KMeans()
-                  .setK(2)
+                  .setK(1)
                   .setMaxIterations(maxIterations)
                   .setInitializationMode(initializationMode)
                   .setInitializationSteps(initializationSteps)
                   .setEpsilon(epsilon)
                   .run(data)
     var centers = model.clusterCenters
-    var currentModelScore = calculateBICModel(data, model)
     var oldCenterCount = 0.toLong
     while (oldCenterCount != centers.length && centers.length < kMax) {
       oldCenterCount = centers.length
       centers = centers.flatMap(c => centroidSplitter(c, data, model))
       model = new KMeans()
         .setK(centers.length)
-        .setMaxIterations(maxIterations)
+        .setMaxIterations(0)
         .setInitializationMode(initializationMode)
         .setEpsilon(epsilon)
         .setInitialModel(new KMeansModel(centers))
@@ -134,57 +129,66 @@ class XMeans private (
     centers
   }
 
-  def calculateBICModel(
+  private def calculateBICModel(
     data: RDD[Vector],
     model: KMeansModel): Double = {
       val bic = model.clusterCenters.map(center => calculateBICCluster(center, data, model, model.k)).sum
       bic
   }
 
-  def calculateBICCluster(
+  private def calculateBICCluster(
     center: Vector,
     data: RDD[Vector],
     model: KMeansModel,
     k: Int): Double = {
-      val points = model.predict(data)
+      val d = center.size
+      val r = data.count()
+      val rn = model.predict(data)
         .filter(_ == model.clusterCenters.indexOf(center))
         .count()
-      val bic = (-1 * points * Math.log(2 * Math.PI) / 2) - (points * center.size * Math.log(varianceMLE(data, model, k)) / 2) - (points - k / 2) + (points * Math.log(points)) - (points * Math.log(data.count())) - (((k - 1) + (center.size * k) + 1) * Math.log(data.count()) / 2)
+      val l1 = -1 * rn * Math.log(2 * Math.PI) / 2
+      val l2 = -1 * rn * d * Math.log(varianceMLE(data, model, k)) / 2
+      val l3 = -1 * (rn - k) / 2
+      val l4 = rn * Math.log(rn)
+      val l5 = -1 * rn * Math.log(r)
+      val l6 = -1 * Math.log(r) * (k - 1 + (k * d) + varianceMLE(data, model, k))
+      val bic = l1 + l2 + l3 + l4 + l5 + l6
     bic
   }
 
-  def centroidSplitter(
+  private def centroidSplitter(
     center: Vector,
     data: RDD[Vector],
     model: KMeansModel): Array[Vector] = {
       val clusterData = model.predict(data)
         .zip(data)
         .filter(_._1 == model.clusterCenters.indexOf(center))
-        .map(x => x._2).cache()
+        .map(x => x._2)
+        .cache()
       val modelk1 = new KMeans()
-                    .setK(1)
-                    .setMaxIterations(maxIterations)
-                    .setInitializationMode(initializationMode)
-                    .setInitializationSteps(initializationSteps)
-                    .setEpsilon(epsilon)
-                    .run(clusterData)
+        .setK(1)
+        .setMaxIterations(maxIterations)
+        .setInitializationMode(initializationMode)
+        .setInitializationSteps(initializationSteps)
+        .setEpsilon(epsilon)
+        .run(clusterData)
       val modelk2 = new KMeans()
-                    .setK(2)
-                    .setMaxIterations(maxIterations)
-                    .setInitializationMode(initializationMode)
-                    .setInitializationSteps(initializationSteps)
-                    .setEpsilon(epsilon)
-                    .run(clusterData)
+        .setK(2)
+        .setMaxIterations(maxIterations)
+        .setInitializationMode(initializationMode)
+        .setInitializationSteps(initializationSteps)
+        .setEpsilon(epsilon)
+        .run(clusterData)
       if (modelk2.k == 2) {
-        if (calculateBICCluster(modelk1.clusterCenters(0), clusterData, modelk1, 1) > (calculateBICCluster(modelk2.clusterCenters(0), clusterData, modelk2, 1) + calculateBICCluster(modelk2.clusterCenters(1), clusterData, modelk2, 1))) {
-            modelk1.clusterCenters
+        if (calculateBICModel(clusterData, modelk1) > calculateBICModel(clusterData, modelk2)) {
+          modelk1.clusterCenters
         } else {
-            modelk2.clusterCenters
+          modelk2.clusterCenters
         }
       } else {
         modelk1.clusterCenters
       }
-  }
+    }
 
   private def varianceMLE(
     data: RDD[Vector],
@@ -226,9 +230,9 @@ case class DataPopulator(val dimensions: Int, val partitions: Int, val dataSetLa
 }
 
 val dimensions = 2
-val partitions = 4
+val partitions = 3
 val range = 10
-val pointsPerPartition = 512
+val pointsPerPartition = 10000
 var dataPopArray = new Array[DataPopulator](partitions)
 
 for (i <- 0 to partitions - 1) {
@@ -241,6 +245,6 @@ val dataset = sc.parallelize(dataPopArray, partitions)
   .flatMap(x => x)
   .cache()
 
-println("Result = " + new XMeans().setKMax(3).run(dataset).mkString(",\n\t"))
+println("Result = " + new XMeans().setKMax(12).run(dataset).mkString(",\n\t"))
 
 System.exit(0)
