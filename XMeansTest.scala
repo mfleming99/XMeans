@@ -2,25 +2,38 @@ import java.lang.Math
 import java.io._
 import java.nio._
 import sys.process._
+import util.Random
 
-import org.apache.spark.mllib.clustering.{KMeans, KMeansModel}
+
+import org.apache.spark.mllib.clustering.{KMeans, KMeansModel, DistanceMeasure}
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
-
+import org.apache.spark.util._
 import org.apache.spark.rdd.RDD
+
+/**
+ * A clustering model for K-means. Each point belongs to the cluster with the closest center.
+ */
+class XMeansModel (val clusterCenters: Array[Vector]) {
+
+    def k: Int = clusterCenters.length
+}
+
 
 class XMeans private (
   private var kMax: Int,
   private var maxIterations: Int,
   private var initializationMode: String,
   private var initializationSteps: Int,
-  private var epsilon: Double) extends Serializable {
+  private var epsilon: Double,
+  private var seed: Long,
+  private var distanceMeasure: String) extends Serializable {
 
   /**
      * Constructs a XMeans instance with default parameters: {kMax: 12, maxIterations: 20,
      * initializationMode: "k-means||", initializationSteps: 2, epsilon: 1e-4, seed: random,
      * distanceMeasure: "euclidean"}.
      */
-  def this() = this(12, 20, KMeans.K_MEANS_PARALLEL, 2, 1e-4)
+  def this() = this(12, 20, KMeans.K_MEANS_PARALLEL, 2, 1e-4, Random.nextLong, "euclidean")
 
 
   /**
@@ -103,14 +116,43 @@ class XMeans private (
     this
   }
 
+  /**
+   * The random seed for cluster initialization.
+   */
+  def getSeed: Long = seed
 
-  def run(data: RDD[Vector]): Array[org.apache.spark.mllib.linalg.Vector] = {
+  /**
+   * Set the random seed for cluster initialization.
+   */
+  def setSeed(seed: Long): this.type = {
+    this.seed = seed
+    this
+  }
+
+  /**
+   * The distance suite used by the algorithm.
+   */
+  def getDistanceMeasure: String = distanceMeasure
+
+/**
+ * Set the distance suite used by the algorithm.
+ */
+def setDistanceMeasure(distanceMeasure: String): this.type = {
+  //TODO Add some sort of verification that the distanceMeasure is valid
+  //DistanceMeasure.validateDistanceMeasure(distanceMeasure)
+  this.distanceMeasure = distanceMeasure
+  this
+}
+
+
+  def run(data: RDD[Vector]): XMeansModel = {
     var model = new KMeans()
                   .setK(1)
                   .setMaxIterations(maxIterations)
                   .setInitializationMode(initializationMode)
                   .setInitializationSteps(initializationSteps)
                   .setEpsilon(epsilon)
+                  .setDistanceMeasure(distanceMeasure)
                   .run(data)
     var centers = model.clusterCenters
     var oldCenterCount = 0.toLong
@@ -123,10 +165,12 @@ class XMeans private (
         .setInitializationMode(initializationMode)
         .setEpsilon(epsilon)
         .setInitialModel(new KMeansModel(centers))
+        .setSeed(seed)
+        .setDistanceMeasure(distanceMeasure)
         .run(data)
       centers = model.clusterCenters
     }
-    centers
+    new XMeansModel(centers)
   }
 
   private def calculateBICModel(
@@ -171,6 +215,8 @@ class XMeans private (
         .setInitializationMode(initializationMode)
         .setInitializationSteps(initializationSteps)
         .setEpsilon(epsilon)
+        .setSeed(seed)
+        .setDistanceMeasure(distanceMeasure)
         .run(clusterData)
       val modelk2 = new KMeans()
         .setK(2)
@@ -178,6 +224,8 @@ class XMeans private (
         .setInitializationMode(initializationMode)
         .setInitializationSteps(initializationSteps)
         .setEpsilon(epsilon)
+        .setSeed(seed)
+        .setDistanceMeasure(distanceMeasure)
         .run(clusterData)
       if (modelk2.k == 2) {
         if (calculateBICModel(clusterData, modelk1) > calculateBICModel(clusterData, modelk2)) {
@@ -245,6 +293,9 @@ val dataset = sc.parallelize(dataPopArray, partitions)
   .flatMap(x => x)
   .cache()
 
-println("Result = " + new XMeans().setKMax(12).run(dataset).mkString(",\n\t"))
+val model = new XMeans().setKMax(12).run(dataset)
+
+
+println("Result = " + model.clusterCenters.mkString(",\n\t"))
 
 System.exit(0)

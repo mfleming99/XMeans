@@ -1,8 +1,10 @@
-
 import java.lang.Math
+import util.Random
 
-import org.apache.spark.mllib.clustering.{KMeans, KMeansModel}
+
+import org.apache.spark.mllib.clustering.{KMeans, KMeansModel, DistanceMeasure}
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
+import org.apache.spark.util._
 import org.apache.spark.rdd.RDD
 
 class XMeans private (
@@ -10,14 +12,16 @@ class XMeans private (
   private var maxIterations: Int,
   private var initializationMode: String,
   private var initializationSteps: Int,
-  private var epsilon: Double) extends Serializable {
+  private var epsilon: Double,
+  private var seed: Long,
+  private var distanceMeasure: String) extends Serializable {
 
   /**
      * Constructs a XMeans instance with default parameters: {kMax: 12, maxIterations: 20,
      * initializationMode: "k-means||", initializationSteps: 2, epsilon: 1e-4, seed: random,
      * distanceMeasure: "euclidean"}.
      */
-  def this() = this(12, 20, KMeans.K_MEANS_PARALLEL, 2, 1e-4)
+  def this() = this(12, 20, KMeans.K_MEANS_PARALLEL, 2, 1e-4, Random.nextLong, "euclidean")
 
 
   /**
@@ -100,6 +104,34 @@ class XMeans private (
     this
   }
 
+  /**
+   * The random seed for cluster initialization.
+   */
+  def getSeed: Long = seed
+
+  /**
+   * Set the random seed for cluster initialization.
+   */
+  def setSeed(seed: Long): this.type = {
+    this.seed = seed
+    this
+  }
+
+  /**
+   * The distance suite used by the algorithm.
+   */
+  def getDistanceMeasure: String = distanceMeasure
+
+/**
+ * Set the distance suite used by the algorithm.
+ */
+def setDistanceMeasure(distanceMeasure: String): this.type = {
+  //TODO Add some sort of verification that the distanceMeasure is valid
+  //DistanceMeasure.validateDistanceMeasure(distanceMeasure)
+  this.distanceMeasure = distanceMeasure
+  this
+}
+
 
   def run(data: RDD[Vector]): Array[org.apache.spark.mllib.linalg.Vector] = {
     var model = new KMeans()
@@ -108,6 +140,7 @@ class XMeans private (
                   .setInitializationMode(initializationMode)
                   .setInitializationSteps(initializationSteps)
                   .setEpsilon(epsilon)
+                  .setDistanceMeasure(distanceMeasure)
                   .run(data)
     var centers = model.clusterCenters
     var oldCenterCount = 0.toLong
@@ -120,6 +153,8 @@ class XMeans private (
         .setInitializationMode(initializationMode)
         .setEpsilon(epsilon)
         .setInitialModel(new KMeansModel(centers))
+        .setSeed(seed)
+        .setDistanceMeasure(distanceMeasure)
         .run(data)
       centers = model.clusterCenters
     }
@@ -138,10 +173,18 @@ class XMeans private (
     data: RDD[Vector],
     model: KMeansModel,
     k: Int): Double = {
-      val points = model.predict(data)
+      val d = center.size
+      val r = data.count()
+      val rn = model.predict(data)
         .filter(_ == model.clusterCenters.indexOf(center))
         .count()
-      val bic = (-1 * points * Math.log(2 * Math.PI) / 2) - (points * center.size * Math.log(varianceMLE(data, model, k)) / 2) - (points - k / 2) + (points * Math.log(points)) - (points * Math.log(data.count())) - (((k - 1) + (center.size * k) + 1) * Math.log(data.count()) / 2)
+      val l1 = -1 * rn * Math.log(2 * Math.PI) / 2
+      val l2 = -1 * rn * d * Math.log(varianceMLE(data, model, k)) / 2
+      val l3 = -1 * (rn - k) / 2
+      val l4 = rn * Math.log(rn)
+      val l5 = -1 * rn * Math.log(r)
+      val l6 = -1 * Math.log(r) * (k - 1 + (k * d) + varianceMLE(data, model, k))
+      val bic = l1 + l2 + l3 + l4 + l5 + l6
     bic
   }
 
@@ -154,34 +197,34 @@ class XMeans private (
         .filter(_._1 == model.clusterCenters.indexOf(center))
         .map(x => x._2)
         .cache()
-      if (clusterData.count > 0) {
-        val modelk1 = new KMeans()
-                      .setK(1)
-                      .setMaxIterations(maxIterations)
-                      .setInitializationMode(initializationMode)
-                      .setInitializationSteps(initializationSteps)
-                      .setEpsilon(epsilon)
-                      .run(clusterData)
-        val modelk2 = new KMeans()
-                      .setK(2)
-                      .setMaxIterations(maxIterations)
-                      .setInitializationMode(initializationMode)
-                      .setInitializationSteps(initializationSteps)
-                      .setEpsilon(epsilon)
-                      .run(clusterData)
-        if (modelk2.k == 2) {
-          if (calculateBICCluster(modelk1.clusterCenters(0), clusterData, modelk1, 1) > (calculateBICCluster(modelk2.clusterCenters(0), clusterData, modelk2, 1) + calculateBICCluster(modelk2.clusterCenters(1), clusterData, modelk2, 1))) {
-              modelk1.clusterCenters
-          } else {
-              modelk2.clusterCenters
-          }
-        } else {
+      val modelk1 = new KMeans()
+        .setK(1)
+        .setMaxIterations(maxIterations)
+        .setInitializationMode(initializationMode)
+        .setInitializationSteps(initializationSteps)
+        .setEpsilon(epsilon)
+        .setSeed(seed)
+        .setDistanceMeasure(distanceMeasure)
+        .run(clusterData)
+      val modelk2 = new KMeans()
+        .setK(2)
+        .setMaxIterations(maxIterations)
+        .setInitializationMode(initializationMode)
+        .setInitializationSteps(initializationSteps)
+        .setEpsilon(epsilon)
+        .setSeed(seed)
+        .setDistanceMeasure(distanceMeasure)
+        .run(clusterData)
+      if (modelk2.k == 2) {
+        if (calculateBICModel(clusterData, modelk1) > calculateBICModel(clusterData, modelk2)) {
           modelk1.clusterCenters
+        } else {
+          modelk2.clusterCenters
         }
       } else {
-        Array[Vector]()
+        modelk1.clusterCenters
       }
-  }
+    }
 
   private def varianceMLE(
     data: RDD[Vector],
@@ -189,5 +232,35 @@ class XMeans private (
     k: Long): Double = {
     val variance = model.computeCost(data) / (data.count() - k).toDouble
     variance
+  }
+}
+
+case class DataPopulator(val dimensions: Int, val partitions: Int, val dataSetLable: Int) extends Serializable {
+  val dims: Int = dimensions
+  val parts: Int = partitions
+  val lable: Int = dataSetLable
+
+  def populateData(): Array[org.apache.spark.mllib.linalg.Vector] = {
+    val cmd = Seq("./points", dims.toString, parts.toString, lable.toString, pointsPerPartition.toString, range.toString)
+    (cmd).!(ProcessLogger(line => ()))
+    val bis = new BufferedInputStream(new FileInputStream("syntheticData_" + lable + ".bin"))
+    var data = byteArrToDoubleArr(Stream.continually(bis.read)
+      .takeWhile(-1 !=).map(_.toByte).toArray)
+      .sliding(dimensions, dimensions)
+      .toArray
+    var vectoredData = new Array[org.apache.spark.mllib.linalg.Vector](data.length)
+    for (i <- 0 to data.length - 1) {
+      vectoredData(i) = Vectors.dense(data(i))
+    }
+    vectoredData
+  }
+
+  def byteArrToDoubleArr(arr: Array[Byte]) : Array[Double] = {
+    val times = 8
+    val newArr = Array.ofDim[Double](arr.length / times)
+    for (i <- 0 to newArr.length - 1) {
+      newArr(i) = ByteBuffer.wrap(arr, times*i, times).order(ByteOrder.LITTLE_ENDIAN).getDouble()
+    }
+    newArr
   }
 }
