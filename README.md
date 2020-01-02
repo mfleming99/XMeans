@@ -9,3 +9,4 @@ To use this implementation simply put the `XMeans.scala` and `XMeansModel.scala`
 val model = new XMeans().setKMax(12).run(dataset)
 centers = model.clusterCenters
 ```
+After this the centers variable will contain all the clusters that the XMeans algorithm calculated. Note: the KMax is the maximum clusters that you are willing to compute, but the algorithm will stop before the max value if it is accuratly representing the space.
