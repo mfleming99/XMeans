@@ -1,23 +1,10 @@
-import java.lang.Math
-import java.io._
-import java.nio._
-import sys.process._
+package org.mf.XMeans
+
 import util.Random
 
-
-import org.apache.spark.mllib.clustering.{KMeans, KMeansModel, DistanceMeasure}
-import org.apache.spark.mllib.linalg.{Vector, Vectors}
-import org.apache.spark.util._
+import org.apache.spark.mllib.clustering.{KMeans, KMeansModel}
+import org.apache.spark.mllib.linalg.{Vector}
 import org.apache.spark.rdd.RDD
-
-/**
- * A clustering model for K-means. Each point belongs to the cluster with the closest center.
- */
-class XMeansModel (val clusterCenters: Array[Vector]) {
-
-    def k: Int = clusterCenters.length
-}
-
 
 class XMeans private (
   private var kMax: Int,
@@ -145,7 +132,7 @@ def setDistanceMeasure(distanceMeasure: String): this.type = {
 }
 
 
-  def run(data: RDD[Vector]): XMeansModel = {
+  def run(data: RDD[Vector]): Array[org.apache.spark.mllib.linalg.Vector] = {
     var model = new KMeans()
                   .setK(1)
                   .setMaxIterations(maxIterations)
@@ -156,7 +143,7 @@ def setDistanceMeasure(distanceMeasure: String): this.type = {
                   .run(data)
     var centers = model.clusterCenters
     var oldCenterCount = 0.toLong
-    while (oldCenterCount != centers.length && centers.length < kMax) {
+    while (oldCenterCount != centers.length && centers.length < kMax / 2) {
       oldCenterCount = centers.length
       centers = centers.flatMap(c => centroidSplitter(c, data, model))
       model = new KMeans()
@@ -170,7 +157,7 @@ def setDistanceMeasure(distanceMeasure: String): this.type = {
         .run(data)
       centers = model.clusterCenters
     }
-    new XMeansModel(centers)
+    centers
   }
 
   private def calculateBICModel(
@@ -246,56 +233,3 @@ def setDistanceMeasure(distanceMeasure: String): this.type = {
     variance
   }
 }
-
-case class DataPopulator(val dimensions: Int, val partitions: Int, val dataSetLable: Int) extends Serializable {
-  val dims: Int = dimensions
-  val parts: Int = partitions
-  val lable: Int = dataSetLable
-
-  def populateData(): Array[org.apache.spark.mllib.linalg.Vector] = {
-    val cmd = Seq("./points", dims.toString, parts.toString, lable.toString, pointsPerPartition.toString, range.toString)
-    (cmd).!(ProcessLogger(line => ()))
-    val bis = new BufferedInputStream(new FileInputStream("syntheticData_" + lable + ".bin"))
-    var data = byteArrToDoubleArr(Stream.continually(bis.read)
-      .takeWhile(-1 !=).map(_.toByte).toArray)
-      .sliding(dimensions, dimensions)
-      .toArray
-    var vectoredData = new Array[org.apache.spark.mllib.linalg.Vector](data.length)
-    for (i <- 0 to data.length - 1) {
-      vectoredData(i) = Vectors.dense(data(i))
-    }
-    vectoredData
-  }
-
-  def byteArrToDoubleArr(arr: Array[Byte]) : Array[Double] = {
-    val times = 8
-    val newArr = Array.ofDim[Double](arr.length / times)
-    for (i <- 0 to newArr.length - 1) {
-      newArr(i) = ByteBuffer.wrap(arr, times*i, times).order(ByteOrder.LITTLE_ENDIAN).getDouble()
-    }
-    newArr
-  }
-}
-
-val dimensions = 2
-val partitions = 3
-val range = 10
-val pointsPerPartition = 10000
-var dataPopArray = new Array[DataPopulator](partitions)
-
-for (i <- 0 to partitions - 1) {
-  dataPopArray(i) = new DataPopulator(dimensions, partitions, i)
-}
-
-
-val dataset = sc.parallelize(dataPopArray, partitions)
-  .map(x =>x.populateData())
-  .flatMap(x => x)
-  .cache()
-
-val model = new XMeans().setKMax(12).run(dataset)
-
-
-println("Result = " + model.clusterCenters.mkString(",\n\t"))
-
-System.exit(0)
