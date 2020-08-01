@@ -2,7 +2,7 @@ scalaVersion := "2.12.10"
 
 name := "XMeans"
 organization := "org.mf"
-version := "1.1"
+version := "1.2"
 
 githubOwner := "mfleming99"
 githubRepository := "XMeans"

@@ -1,4 +1,4 @@
-package org.mf.XMeans
+package org.mf
 
 import util.Random
 
@@ -6,7 +6,7 @@ import org.apache.spark.mllib.clustering.{KMeans, KMeansModel}
 import org.apache.spark.mllib.linalg.{Vector}
 import org.apache.spark.rdd.RDD
 
-class XMeans private (
+class XMeans (
   private var kMax: Int,
   private var maxIterations: Int,
   private var initializationMode: String,

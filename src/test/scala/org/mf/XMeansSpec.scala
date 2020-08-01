@@ -1,7 +1,7 @@
-package org.mf.XMeans
+package org.mf
 
 import org.scalatest.flatspec.AnyFlatSpec
-import org.apache.spark.mllib.linalg.{Vector, Vectors}
+import org.apache.spark.mllib.linalg.Vectors
 import com.holdenkarau.spark.testing.SharedSparkContext
 
 class XMeansSpec extends AnyFlatSpec with SharedSparkContext {
